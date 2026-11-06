@@ -79,6 +79,61 @@ Try questions such as:
 - `What is our password reset policy?`
 - `What is the latest Microsoft Teams outage guidance?`
 
+## Run with Docker
+
+Docker provides an additional deployment path; the local Python workflow above still works as before. The multi-stage build installs dependencies in a discarded builder stage, then copies only the virtual environment and application runtime files into a slim final image. The final container runs as an unprivileged user and does not contain the source control metadata, local `.env`, audit database, existing uploads, tests, compiler toolchain, or dependency cache.
+
+### 1. Build the image
+
+From the repository root, with Docker BuildKit enabled (the default in current Docker versions):
+
+```powershell
+docker build --tag enterprise-it-rag:local .
+```
+
+No API keys are passed at build time or stored in image layers.
+
+### 2. Start the container
+
+The application needs the same `.env` described in **First-time setup**. Use named volumes to preserve the SQLite audit log and uploaded documents when the container is replaced:
+
+```powershell
+docker volume create enterprise-it-rag-runtime
+docker volume create enterprise-it-rag-uploads
+
+docker run --name enterprise-it-rag `
+  --env-file .env `
+  --publish 8080:8080 `
+  --mount type=volume,source=enterprise-it-rag-runtime,target=/app/runtime `
+  --mount type=volume,source=enterprise-it-rag-uploads,target=/app/uploads `
+  enterprise-it-rag:local
+```
+
+Open <http://127.0.0.1:8080>. Check container health with:
+
+```powershell
+docker inspect --format '{{.State.Health.Status}}' enterprise-it-rag
+```
+
+Stop and remove the container without deleting its persistent data:
+
+```powershell
+docker stop enterprise-it-rag
+docker rm enterprise-it-rag
+```
+
+### 3. Index the sample knowledge base
+
+In another terminal, after the container is running:
+
+```powershell
+docker exec enterprise-it-rag python ingest_sample_kb.py
+```
+
+This is required once for a new Pinecone index/namespace, just as it is in the local setup. The sample documents are included in the image; uploaded documents and the audit database remain in their named volumes.
+
+To rebuild after a code or dependency change, run `docker build --tag enterprise-it-rag:local .` again, remove the old container, and start it with the same `docker run` command. Do not bake `.env` or credentials into the image with `COPY`, `ARG`, or `ENV` instructions.
+
 ## How it works
 
 The application is a FastAPI service with a lightweight HTML/CSS/JavaScript chat interface. Its agent is implemented as a LangGraph state machine:
@@ -132,6 +187,8 @@ data/sample_kb/          Example internal handbook and runbook
 static/ + templates/     Browser chat UI
 ingest_sample_kb.py      One-time sample knowledge ingestion
 run.py                   Local development entry point
+Dockerfile               Multi-stage production container build
+.dockerignore            Files excluded from the Docker build context
 ```
 
 ## Current scope
