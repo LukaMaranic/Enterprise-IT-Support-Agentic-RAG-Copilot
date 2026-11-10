@@ -1,0 +1,46 @@
+name: enterprise-it-rag-dev
+
+services:
+  backend:
+    build:
+      context: .
+      target: backend-dev
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./app:/app/app:ro
+      - ./ingest_sample_kb.py:/app/ingest_sample_kb.py:ro
+      - ./data/sample_kb:/app/data/sample_kb:ro
+      - runtime-data:/app/runtime
+      - uploads-data:/app/uploads
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      target: frontend-dev
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      VITE_API_PROXY_TARGET: http://backend:8080
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/frontend
+      - frontend-node-modules:/frontend/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+
+volumes:
+  runtime-data:
+  uploads-data:
+  frontend-node-modules:
