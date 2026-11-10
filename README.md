@@ -18,7 +18,7 @@ The included sample knowledge base covers common topics such as VPN access, pass
 
 ## First-time setup
 
-### 1. Create and activate the Python environment
+### 1. Install the backend
 
 Python 3.11 is recommended. From the repository root:
 
@@ -30,7 +30,17 @@ pip install -r requierments.txt
 
 > The repository currently uses the filename `requierments.txt` (including that spelling).
 
-### 2. Create `.env`
+### 2. Install the React frontend
+
+Node.js 22 is recommended:
+
+```powershell
+cd frontend
+npm ci
+cd ..
+```
+
+### 3. Create `.env`
 
 Create a `.env` file in the repository root:
 
@@ -55,7 +65,9 @@ OpenAI is used for routing, grading, response generation, query rewriting, and e
 
 The app creates the Pinecone serverless index automatically in AWS `us-east-1` with cosine similarity. The index dimension must match the embedding model. If an index with the configured name exists with a different dimension, the current implementation deletes and recreates it, so use a dedicated index name.
 
-### 3. Index the sample company knowledge base
+Do not put spaces around `=` or quote variable names; Docker Compose uses this same file.
+
+### 4. Index the sample company knowledge base
 
 Run this once before asking company-specific questions:
 
@@ -65,13 +77,22 @@ python ingest_sample_kb.py
 
 This loads the files in `data/sample_kb`, splits them into overlapping chunks, creates OpenAI embeddings, and writes the vectors to the configured Pinecone namespace.
 
-### 4. Start the application
+### 5. Start local development
+
+Start FastAPI in the first terminal:
 
 ```powershell
 python run.py
 ```
 
-Open <http://127.0.0.1:8080>. The development server runs with auto-reload enabled. A quick health check is available at <http://127.0.0.1:8080/api/health>.
+Start Vite in a second terminal:
+
+```powershell
+cd frontend
+npm run dev -- --host 127.0.0.1
+```
+
+Open <http://127.0.0.1:5173>. Vite hot-reloads React and proxies `/api`, `/docs`, and `/openapi.json` to FastAPI on port `8080`. A quick backend health check is available at <http://127.0.0.1:8080/api/health>.
 
 Try questions such as:
 
@@ -79,64 +100,71 @@ Try questions such as:
 - `What is our password reset policy?`
 - `What is the latest Microsoft Teams outage guidance?`
 
-## Run with Docker
+## Docker development
 
-Docker provides an additional deployment path; the local Python workflow above still works as before. The multi-stage build installs dependencies in a discarded builder stage, then copies only the virtual environment and application runtime files into a slim final image. The final container runs as an unprivileged user and does not contain the source control metadata, local `.env`, audit database, existing uploads, tests, compiler toolchain, or dependency cache.
-
-### 1. Build the image
-
-From the repository root, with Docker BuildKit enabled (the default in current Docker versions):
+The development Compose stack runs Vite and FastAPI separately. Both use hot reload; Vite polls for changes so file watching remains reliable with Docker Desktop on Windows.
 
 ```powershell
-docker build --tag enterprise-it-rag:local .
+docker compose -f compose.dev.yml up --build
 ```
 
-No API keys are passed at build time or stored in image layers.
+Open the React application at <http://127.0.0.1:5173>. FastAPI and its interactive documentation remain available at <http://127.0.0.1:8080/docs>.
 
-### 2. Start the container
-
-The application needs the same `.env` described in **First-time setup**. Use named volumes to preserve the SQLite audit log and uploaded documents when the container is replaced:
+Stop the development stack while preserving its named volumes:
 
 ```powershell
-docker volume create enterprise-it-rag-runtime
-docker volume create enterprise-it-rag-uploads
-
-docker run --name enterprise-it-rag `
-  --env-file .env `
-  --publish 8080:8080 `
-  --mount type=volume,source=enterprise-it-rag-runtime,target=/app/runtime `
-  --mount type=volume,source=enterprise-it-rag-uploads,target=/app/uploads `
-  enterprise-it-rag:local
+docker compose -f compose.dev.yml down
 ```
 
-Open <http://127.0.0.1:8080>. Check container health with:
+## Docker production
+
+The production build has three boundaries: Node compiles React, a Python builder installs the backend environment, and the final Python slim stage receives only runtime dependencies, backend code, sample documents, and compiled browser assets. Node, npm, TypeScript sources, dependency caches, tests, local secrets, existing uploads, and the local audit database do not enter the final image.
+
+Node and Python base images are pinned by digest for reproducible, tamper-evident builds. Update those digests deliberately when applying upstream runtime security updates.
+
+Build and start the hardened single-service stack:
 
 ```powershell
-docker inspect --format '{{.State.Health.Status}}' enterprise-it-rag
+docker compose up --build -d
+docker compose ps
 ```
 
-Stop and remove the container without deleting its persistent data:
+Open <http://127.0.0.1:8080>. Production Compose runs as an unprivileged user with a read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, a bounded `/tmp` tmpfs, persistent audit/upload volumes, a health check, and `restart: unless-stopped`.
+
+View logs and stop the application:
 
 ```powershell
-docker stop enterprise-it-rag
-docker rm enterprise-it-rag
+docker compose logs -f app
+docker compose down
 ```
 
-### 3. Index the sample knowledge base
+Named volumes survive `docker compose down`. Use `docker compose down --volumes` only when you intentionally want to delete audit and upload data.
 
-In another terminal, after the container is running:
+Index the bundled sample knowledge base after startup when required:
 
 ```powershell
-docker exec enterprise-it-rag python ingest_sample_kb.py
+docker compose exec app python ingest_sample_kb.py
 ```
 
-This is required once for a new Pinecone index/namespace, just as it is in the local setup. The sample documents are included in the image; uploaded documents and the audit database remain in their named volumes.
+No API keys are used during image construction. Never place credentials in `Dockerfile`, build arguments, or copied frontend environment files.
 
-To rebuild after a code or dependency change, run `docker build --tag enterprise-it-rag:local .` again, remove the old container, and start it with the same `docker run` command. Do not bake `.env` or credentials into the image with `COPY`, `ARG`, or `ENV` instructions.
+## Frontend quality checks
+
+From `frontend/`:
+
+```powershell
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npx playwright install chromium
+npm run test:e2e
+npm run build
+```
 
 ## How it works
 
-The application is a FastAPI service with a lightweight HTML/CSS/JavaScript chat interface. Its agent is implemented as a LangGraph state machine:
+The application is a FastAPI service with a Vite-built React and TypeScript interface. Development uses Vite's proxy; production serves the compiled SPA from FastAPI, so both modes use relative `/api` URLs without CORS configuration. Its agent is implemented as a LangGraph state machine:
 
 1. An OpenAI model routes greetings to a direct response and IT questions to retrieval.
 2. Relevant chunks are retrieved from the Pinecone private knowledge base.
@@ -184,11 +212,14 @@ app/
   services/ingestion.py  Document loading and chunking
   services/audit.py      SQLite query audit log
 data/sample_kb/          Example internal handbook and runbook
-static/ + templates/     Browser chat UI
+frontend/                React, TypeScript, Vite, tests, and compiled UI source
 ingest_sample_kb.py      One-time sample knowledge ingestion
 run.py                   Local development entry point
-Dockerfile               Multi-stage production container build
+Dockerfile               React build, Python build, development, and runtime stages
+compose.yml              Hardened production-like stack
+compose.dev.yml          Vite/FastAPI hot-reload development stack
 .dockerignore            Files excluded from the Docker build context
+TODO.md                  Explicitly deferred UI work
 ```
 
 ## Current scope
