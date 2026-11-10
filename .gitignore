@@ -159,6 +159,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# React / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -218,3 +224,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+settings.json
