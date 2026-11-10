@@ -16,31 +16,13 @@ IT guidance is usually split between internal policies, runbooks, and changing v
 
 The included sample knowledge base covers common topics such as VPN access, password resets, MFA, laptop setup, software access, security, email, devices, and troubleshooting.
 
+## Prerequisites
+
+Application execution is Docker-only. Install Docker Desktop, or Docker Engine with the Compose v2 plugin, and verify that `docker compose version` succeeds.
+
 ## First-time setup
 
-### 1. Install the backend
-
-Python 3.11 is recommended. From the repository root:
-
-```powershell
-conda create -n enterprise-it-rag python=3.11 -y
-conda activate enterprise-it-rag
-pip install -r requierments.txt
-```
-
-> The repository currently uses the filename `requierments.txt` (including that spelling).
-
-### 2. Install the React frontend
-
-Node.js 22 is recommended:
-
-```powershell
-cd frontend
-npm ci
-cd ..
-```
-
-### 3. Create `.env`
+### 1. Create `.env`
 
 Create a `.env` file in the repository root:
 
@@ -67,32 +49,26 @@ The app creates the Pinecone serverless index automatically in AWS `us-east-1` w
 
 Do not put spaces around `=` or quote variable names; Docker Compose uses this same file.
 
-### 4. Index the sample company knowledge base
+### 2. Start the application
 
-Run this once before asking company-specific questions:
-
-```powershell
-python ingest_sample_kb.py
-```
-
-This loads the files in `data/sample_kb`, splits them into overlapping chunks, creates OpenAI embeddings, and writes the vectors to the configured Pinecone namespace.
-
-### 5. Start local development
-
-Start FastAPI in the first terminal:
+Production is the default quick start:
 
 ```powershell
-python run.py
+docker compose up --build -d
+docker compose ps
 ```
 
-Start Vite in a second terminal:
+Open <http://127.0.0.1:8080>. The health endpoint is available at <http://127.0.0.1:8080/api/health>.
+
+### 3. Index the sample company knowledge base
+
+After the application is running, execute the ingestion script inside the application container:
 
 ```powershell
-cd frontend
-npm run dev -- --host 127.0.0.1
+docker compose exec app python ingest_sample_kb.py
 ```
 
-Open <http://127.0.0.1:5173>. Vite hot-reloads React and proxies `/api`, `/docs`, and `/openapi.json` to FastAPI on port `8080`. A quick backend health check is available at <http://127.0.0.1:8080/api/health>.
+This loads the files in `data/sample_kb`, splits them into overlapping chunks, creates OpenAI embeddings, and writes the vectors to the configured Pinecone namespace. Run it once for each new Pinecone index or namespace.
 
 Try questions such as:
 
@@ -110,6 +86,12 @@ docker compose -f compose.dev.yml up --build
 
 Open the React application at <http://127.0.0.1:5173>. FastAPI and its interactive documentation remain available at <http://127.0.0.1:8080/docs>.
 
+Index the bundled sample knowledge base in development when required:
+
+```powershell
+docker compose -f compose.dev.yml exec backend python ingest_sample_kb.py
+```
+
 Stop the development stack while preserving its named volumes:
 
 ```powershell
@@ -122,7 +104,7 @@ The production build has three boundaries: Node compiles React, a Python builder
 
 Node and Python base images are pinned by digest for reproducible, tamper-evident builds. Update those digests deliberately when applying upstream runtime security updates.
 
-Build and start the hardened single-service stack:
+Build or rebuild the hardened single-service stack:
 
 ```powershell
 docker compose up --build -d
@@ -147,6 +129,45 @@ docker compose exec app python ingest_sample_kb.py
 ```
 
 No API keys are used during image construction. Never place credentials in `Dockerfile`, build arguments, or copied frontend environment files.
+
+## Docker troubleshooting
+
+Check service state and health:
+
+```powershell
+docker compose ps
+docker inspect --format '{{.State.Health.Status}}' enterprise-it-rag-app-1
+```
+
+Follow production or development logs:
+
+```powershell
+docker compose logs -f app
+docker compose -f compose.dev.yml logs -f backend frontend
+```
+
+Recreate containers after configuration or dependency changes:
+
+```powershell
+docker compose up --build --force-recreate -d
+docker compose -f compose.dev.yml up --build --force-recreate
+```
+
+If port `8080` or `5173` is already allocated, stop the other stack before starting the desired one:
+
+```powershell
+docker compose down
+docker compose -f compose.dev.yml down
+```
+
+These commands preserve named volumes. The following commands are destructive and permanently remove the corresponding audit database and uploaded documents:
+
+```powershell
+docker compose down --volumes
+docker compose -f compose.dev.yml down --volumes
+```
+
+To reclaim only unused Docker build cache, use `docker builder prune` and review Docker's confirmation prompt. Avoid broad system prune commands unless you intend to remove resources belonging to other projects.
 
 ## Frontend quality checks
 
@@ -214,7 +235,6 @@ app/
 data/sample_kb/          Example internal handbook and runbook
 frontend/                React, TypeScript, Vite, tests, and compiled UI source
 ingest_sample_kb.py      One-time sample knowledge ingestion
-run.py                   Local development entry point
 Dockerfile               React build, Python build, development, and runtime stages
 compose.yml              Hardened production-like stack
 compose.dev.yml          Vite/FastAPI hot-reload development stack
